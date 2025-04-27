@@ -17,6 +17,7 @@ namespace Shared;
 /// </summary>
 public class ConnectionManager
 {
+    public static int WindowSize = 256; // Size of the sliding window for flow control
     /// <summary>
     ///     Initiates the handshake process as a sender.
     ///     Sends a SYN packet, waits for a SYN-ACK response, and completes with an ACK packet.
