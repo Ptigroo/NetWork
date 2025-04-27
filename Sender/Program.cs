@@ -12,16 +12,56 @@ internal class Program
     public static List<Packet> responsesFromReceiver  = new List<Packet>();
     public static ushort firstSequenceNumber = (ushort)new Random().Next(1, ushort.MaxValue);
     public static ushort senderSequenceNumber = firstSequenceNumber;
-    public static int windowSize = senderSequenceNumber + 256;
     public static byte[] messageAsBytes = [];
     public static List<Packet> packetsToSend = [];
+    public static string message = string.Empty;
+    public static IPEndPoint receiverEndpoint = null!;
+    private static ushort dataSize = 0;
+    private static ushort maxNumberOfBytesPerPackage = 2;
+    private static ushort startOfWindow;
+    private static ushort endOfWindow { get 
+        {
+            if (startOfWindow < ushort.MaxValue - ConnectionManager.WindowSize)
+            {
+                return (ushort)(startOfWindow + ConnectionManager.WindowSize);
+            }
+            else
+            {
+                return (ushort)(startOfWindow + ConnectionManager.WindowSize - ushort.MaxValue);
+            }
+        } }
     private static async Task Main(string[] args)
     {
-        
+
+        InitConnectionParameters();
+        Console.WriteLine("Initiating handshake...");
+        var hanshakeSuccessfull = await ConnectionManager.InitiateHandshake(udpClient, receiverEndpoint, senderSequenceNumber);
+        if (!hanshakeSuccessfull)
+        {
+            Console.WriteLine("Handshake failed, closing program");
+            return;
+        }
+        Console.WriteLine("Handshake successful.");
+        senderSequenceNumber++;
+        dataSize = (ushort)Encoding.UTF8.GetByteCount(message);
+        messageAsBytes = Encoding.UTF8.GetBytes(message);
+        CompleteMessageWithEmptyByteIfNotEvenNumber();
+        Console.WriteLine("Message to send: " + message);
+        if (hanshakeSuccessfull)
+        {
+            isSending = true;
+            ReadReceiverResponsesThread();
+        }
+        CreatePacketsOfXBytes(maxNumberOfBytesPerPackage);
+        await SendAllPackets();
+        await HandleFinPacket();
+    }
+    private static void InitConnectionParameters()
+    {
 #if DEBUG
         var receiverIp = "127.0.0.1";
         var receiverPort = 5000;
-        string message = "2HelloWorld";
+        message = "2HelloWorld";
         var listeningOn = 5001;
 #else
         if (args.Length != 3)
@@ -31,18 +71,15 @@ internal class Program
         }
         var receiverIp = args[0];
         var receiverPort = int.Parse(args[1]);
-        string message = args[2];
+        message = args[2];
 #endif
 
 
-        var receiverEndpoint = new IPEndPoint(IPAddress.Parse(receiverIp), receiverPort);
-        // Initiate handshake
-        Console.WriteLine("Initiating handshake...");
-        var isConnected = await ConnectionManager.InitiateHandshake(udpClient, receiverEndpoint, senderSequenceNumber);
-        senderSequenceNumber++;
-        ushort dataSize = (ushort)Encoding.UTF8.GetByteCount(message);
-        int bytesToSend = dataSize;
-        messageAsBytes = Encoding.UTF8.GetBytes(message);
+        receiverEndpoint = new IPEndPoint(IPAddress.Parse(receiverIp), receiverPort);
+    }
+
+    private static void CompleteMessageWithEmptyByteIfNotEvenNumber()
+    {
         if (dataSize % 2 != 0)
         {
             byte[] newArray = new byte[messageAsBytes.Length + 1];
@@ -51,82 +88,93 @@ internal class Program
             messageAsBytes = newArray;
             dataSize++;
         }
+    }
+    private static void CreatePacketsOfXBytes(ushort maxNumberOfBytesPerPackage)
+    {
+
         int nextByteIndex = 0;
-        Console.WriteLine("Message to send: " + message);
-        if (isConnected)
+        int bytesLeftToSend = dataSize;
+        while (bytesLeftToSend > 0)
         {
-            isSending = true;
-            SetResponseReader();
-        }
-        while (bytesToSend > 0)
-        {
-            Console.WriteLine("Handshake successful.");
             var packet = new Packet
             {
                 TotalDataSize = dataSize,
                 SequenceNumber = (ushort)(senderSequenceNumber),
-                Data = messageAsBytes[nextByteIndex..(nextByteIndex + 2)]
+                Data = messageAsBytes[nextByteIndex..(nextByteIndex + maxNumberOfBytesPerPackage)]
             };
 
             //var packetBytes = packet.Serialize();
             packetsToSend.Add(packet);
-            nextByteIndex = nextByteIndex + 2;
+            nextByteIndex = nextByteIndex + maxNumberOfBytesPerPackage;
             senderSequenceNumber++;
-            bytesToSend -= 2;
+            bytesLeftToSend -= 2;
         }
+    }
+    private static async Task SendAllPackets()
+    {
+
         senderSequenceNumber = firstSequenceNumber;
-        if (isConnected)
+        startOfWindow = senderSequenceNumber;
+        while (senderSequenceNumber < packetsToSend.Count + firstSequenceNumber)
         {
-            while (senderSequenceNumber < packetsToSend.Count + firstSequenceNumber)
+            if (isOutOfWindow())
             {
-                var serializedPacket = packetsToSend[senderSequenceNumber - firstSequenceNumber].Serialize();
-                await udpClient.SendAsync(serializedPacket, serializedPacket.Length, receiverEndpoint);
-                senderSequenceNumber++;
-            }
-            Console.WriteLine("Sent data packet to receiver.");
-            // Send FIN Packet to initiate connection termination
-            var finPacket = new Packet
-            {
-                FIN = true,
-                SequenceNumber = (ushort)(senderSequenceNumber),
-                TotalDataSize = 0,
-                Data = new byte[0]
-            };
-            var finBytes = finPacket.Serialize();
-            await udpClient.SendAsync(finBytes, finBytes.Length, receiverEndpoint);
-            senderSequenceNumber++;
-            Console.WriteLine("Sent FIN packet to receiver. Waiting for FIN-ACK.");
-            // Wait for FIN-ACK
-            var receiveTask = udpClient.ReceiveAsync();
-            if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
-            {
-                var result = receiveTask.Result;
-                var finAckPacket = Packet.Deserialize(result.Buffer);
-                if (finAckPacket.FIN && finAckPacket.ACK)
+                Console.WriteLine("Out of window... Waiting for receiver before going onward");
+                await Task.Delay(3000);
+                if (isOutOfWindow())
                 {
-                    Console.WriteLine("Received FIN-ACK. Sending final ACK.");
-                    // Send final ACK to complete termination
-                    var finalAckPacket = new Packet
-                    {
-                        ACK = true,
-                        SequenceNumber = (ushort)(senderSequenceNumber + 2),
-                        TotalDataSize = 0,
-                        Data = new byte[0]
-                    };
-                    var finalAckBytes = finalAckPacket.Serialize();
-                    await udpClient.SendAsync(finalAckBytes, finalAckBytes.Length, receiverEndpoint);
-                    isSending = false;
-                    Console.WriteLine("Connection terminated gracefully.");
+                    Console.WriteLine("Still out of window... Closing the program");
                 }
             }
-            else
+            var serializedPacket = packetsToSend[senderSequenceNumber - firstSequenceNumber].Serialize();
+            await udpClient.SendAsync(serializedPacket, serializedPacket.Length, receiverEndpoint);
+            senderSequenceNumber++;
+
+
+        }
+        Console.WriteLine("All packets sent to receiver.");
+
+    }
+    public static async Task HandleFinPacket()
+    {
+        // Send FIN Packet to initiate connection termination
+        var finPacket = new Packet
+        {
+            FIN = true,
+            SequenceNumber = (ushort)(senderSequenceNumber),
+            TotalDataSize = 0,
+            Data = new byte[0]
+        };
+        var finBytes = finPacket.Serialize();
+        await udpClient.SendAsync(finBytes, finBytes.Length, receiverEndpoint);
+        senderSequenceNumber++;
+        Console.WriteLine("Sent FIN packet to receiver. Waiting for FIN-ACK.");
+        // Wait for FIN-ACK
+        var receiveTask = udpClient.ReceiveAsync();
+        if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
+        {
+            var result = receiveTask.Result;
+            var finAckPacket = Packet.Deserialize(result.Buffer);
+            if (finAckPacket.FIN && finAckPacket.ACK)
             {
-                Console.WriteLine("Did not receive FIN-ACK. Connection termination failed.");
+                Console.WriteLine("Received FIN-ACK. Sending final ACK.");
+                // Send final ACK to complete termination
+                var finalAckPacket = new Packet
+                {
+                    ACK = true,
+                    SequenceNumber = (ushort)(senderSequenceNumber + 2),
+                    TotalDataSize = 0,
+                    Data = new byte[0]
+                };
+                var finalAckBytes = finalAckPacket.Serialize();
+                await udpClient.SendAsync(finalAckBytes, finalAckBytes.Length, receiverEndpoint);
+                isSending = false;
+                Console.WriteLine("Connection terminated gracefully.");
             }
         }
         else
         {
-            Console.WriteLine("Handshake failed.");
+            Console.WriteLine("Did not receive FIN-ACK. Connection termination failed.");
         }
     }
 
@@ -135,7 +183,7 @@ internal class Program
     /// déjà enregistrées pour le même numéro de séquence. 
     /// Et reset la connexion si le nombre de réponses pour le même numéro de séquence du sender (Dans le data) est égal à 3.
     /// </summary>
-    public static async Task SetResponseReader()
+    public static async Task ReadReceiverResponsesThread()
     {
         while (isSending)
         {
@@ -143,23 +191,63 @@ internal class Program
             var packet = Packet.Deserialize(result.Buffer);
             if (packet.ACK)
             {
-                windowSize++;
-                if (!responsesFromReceiver.Any(response => response.SequenceNumber == packet.SequenceNumber))
+                if (!IsADuplicatedResponse(packet))
                 {
                     responsesFromReceiver.Add(packet);
-                    int highestSequenceNumber = responsesFromReceiver.Max(x => x.SequenceNumber);
+                    ushort highestSequenceNumber = GetHighestSequenceNumberRespondedFromReceiver();
                     if (responsesFromReceiver.Count(response => response.SequenceNumber == highestSequenceNumber) == 3)
                     {
                         //Restart at sequence number 
                         senderSequenceNumber = (ushort)highestSequenceNumber;
                     }
+                    SlideWindow(highestSequenceNumber);
                 }
-
             }
         }
     }
-    public static async Task<bool> EndOfWindow()
+    private static void SlideWindow(ushort highestSequenceNumber)
     {
-        return windowSize == senderSequenceNumber;
+        if (responsesFromReceiver.Count(response => response.SequenceNumber == highestSequenceNumber) == 1)
+        {
+            startOfWindow++;
+            if (endOfWindow < startOfWindow)
+            {
+                responsesFromReceiver.RemoveAll(response => response.SequenceNumber > endOfWindow && response.SequenceNumber < startOfWindow);
+            }
+            responsesFromReceiver.RemoveAll(response => response.SequenceNumber < startOfWindow);
+        }
+    }
+    private static ushort GetHighestSequenceNumberRespondedFromReceiver()
+    {
+        if (endOfWindow < startOfWindow)
+        {
+            if (responsesFromReceiver.Any(response => response.SequenceNumber < endOfWindow))
+            {
+                return responsesFromReceiver.Where(response => response.SequenceNumber < endOfWindow).Max(response => response.SequenceNumber);
+            }
+        }
+        return responsesFromReceiver.Max(response => response.SequenceNumber);
+    }
+    private static bool IsADuplicatedResponse(Packet packet)
+    {
+        return responsesFromReceiver.Any(response => response.SequenceNumber == packet.SequenceNumber);
+    }
+    private static bool isOutOfWindow()
+    {
+        if (endOfWindow > startOfWindow)
+        {
+            if (senderSequenceNumber > endOfWindow)
+            {
+                return true;
+            }
+        }
+        else
+        {
+            if (senderSequenceNumber > endOfWindow && senderSequenceNumber < startOfWindow)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }
