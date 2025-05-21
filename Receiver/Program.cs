@@ -66,20 +66,26 @@ internal class Program
 
     private static async Task ReceivePacket()
     {
-        udpReceivedResult = await udpClient.ReceiveAsync();
-        receivedPacket = Packet.Deserialize(udpReceivedResult.Buffer);
-        if (highestCorrectSequenceNumbersReceived == 0)
+        Console.WriteLine("Waiting for packet...");
+        var receiveTask = udpClient.ReceiveAsync();
+        if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
         {
-            sequenceNumbersReceived.Add(receivedPacket.SequenceNumber);
-            highestCorrectSequenceNumbersReceived = receivedPacket.SequenceNumber;
+            var udpReceivedResult = receiveTask.Result;
+            Console.WriteLine("Packet received...");
+            receivedPacket = Packet.Deserialize(udpReceivedResult.Buffer);
+            if (highestCorrectSequenceNumbersReceived == 0)
+            {
+                sequenceNumbersReceived.Add(receivedPacket.SequenceNumber);
+                highestCorrectSequenceNumbersReceived = receivedPacket.SequenceNumber;
+            }
+            else if (receivedPacket.SequenceNumber == highestCorrectSequenceNumbersReceived + 1)
+            {
+                sequenceNumbersReceived.Add(receivedPacket.SequenceNumber);
+                SetHighestCorrectSequenceNumber();
+            }
+            var message = Encoding.UTF8.GetString(receivedPacket.Data);
+            Console.WriteLine($"Received message: {message}");
         }
-        else if (receivedPacket.SequenceNumber == highestCorrectSequenceNumbersReceived + 1)
-        {
-            sequenceNumbersReceived.Add(receivedPacket.SequenceNumber);
-            SetHighestCorrectSequenceNumber();
-        }
-        var message = Encoding.UTF8.GetString(receivedPacket.Data);
-        Console.WriteLine($"Received message: {message}");
     }
     private static async Task HandleFinPacketReceived()
     {
@@ -104,14 +110,21 @@ internal class Program
     }
     private static async Task RespondToSender()
     {
+        if (receivedPacket == null)
+        {
+            return;
+        }
         var responsePacket = new Packet
         {
             ACK = true,
             TotalDataSize = 2,
             Data = Encoding.UTF8.GetBytes(receivedPacket.SequenceNumber.ToString()),
             SequenceNumber = receiverSequenceNumber
-        };
-        await udpClient.SendAsync(responsePacket.Data, responsePacket.TotalDataSize, senderEndpoint);
+        }; 
+        var responseBytes = responsePacket.Serialize();
+        await udpClient.SendAsync(responseBytes, responseBytes.Length, senderEndpoint);
+        //await udpClient.SendAsync(responsePacket.Data, responsePacket.TotalDataSize, senderEndpoint);
+        Console.WriteLine($"Sent ACK for sequence number {receivedPacket.SequenceNumber}");
         receiverSequenceNumber++;
     }
     public static void SetHighestCorrectSequenceNumber()

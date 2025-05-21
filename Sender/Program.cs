@@ -50,7 +50,8 @@ internal class Program
         if (hanshakeSuccessfull)
         {
             isSending = true;
-            ReadReceiverResponsesThread();
+            //ReadReceiverResponsesThread();
+            _ = Task.Run(ReadReceiverResponsesThread);
         }
         CreatePacketsOfXBytes(maxNumberOfBytesPerPackage);
         await SendAllPackets();
@@ -61,7 +62,7 @@ internal class Program
 #if DEBUG
         var receiverIp = "127.0.0.1";
         var receiverPort = 5000;
-        message = "2HelloWorld";
+        message = "2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld2HelloWorld";
         var listeningOn = 5001;
 #else
         if (args.Length != 3)
@@ -124,16 +125,13 @@ internal class Program
                 if (isOutOfWindow())
                 {
                     Console.WriteLine("Still out of window... Closing the program");
+                    //Qu'est ce que je fait ici est-ce que je ferme réellement le programme ou est'ce que je continue d'attendre que la fenêtre glisse ?
                 }
             }
             var serializedPacket = packetsToSend[senderSequenceNumber - firstSequenceNumber].Serialize();
             await udpClient.SendAsync(serializedPacket, serializedPacket.Length, receiverEndpoint);
-            senderSequenceNumber++;
-
-
         }
         Console.WriteLine("All packets sent to receiver.");
-
     }
     public static async Task HandleFinPacket()
     {
@@ -185,23 +183,33 @@ internal class Program
     /// </summary>
     public static async Task ReadReceiverResponsesThread()
     {
+        Console.WriteLine("befor while ");
         while (isSending)
         {
-            var result = await udpClient.ReceiveAsync();
-            var packet = Packet.Deserialize(result.Buffer);
-            if (packet.ACK)
+            Console.WriteLine("in while ");
+                var receiveTask = udpClient.ReceiveAsync();
+            if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
             {
-                if (!IsADuplicatedResponse(packet))
-                {
-                    responsesFromReceiver.Add(packet);
-                    ushort highestSequenceNumber = GetHighestSequenceNumberRespondedFromReceiver();
-                    if (responsesFromReceiver.Count(response => response.SequenceNumber == highestSequenceNumber) == 3)
+                    var result = receiveTask.Result;
+                    Console.WriteLine("after receive while ");
+                    var packet = Packet.Deserialize(result.Buffer);
+                    if (packet.ACK)
                     {
-                        //Restart at sequence number 
-                        senderSequenceNumber = (ushort)highestSequenceNumber;
+                        Console.WriteLine("received ack ");
+                        if (!IsADuplicatedResponse(packet))
+                        {
+                            Console.WriteLine("not duplicated");
+                            responsesFromReceiver.Add(packet);
+                            ushort highestSequenceNumber = GetHighestSequenceNumberRespondedFromReceiver();
+                            if (responsesFromReceiver.Count(response => response.SequenceNumber == highestSequenceNumber) == 3)
+                            {
+                                //Restart at sequence number 
+                                senderSequenceNumber = (ushort)highestSequenceNumber;
+                            }
+                            Console.WriteLine("Highest sequence number responded from receiver: " + highestSequenceNumber);
+                            SlideWindow(highestSequenceNumber);
+                        }
                     }
-                    SlideWindow(highestSequenceNumber);
-                }
             }
         }
     }
@@ -214,7 +222,13 @@ internal class Program
             {
                 responsesFromReceiver.RemoveAll(response => response.SequenceNumber > endOfWindow && response.SequenceNumber < startOfWindow);
             }
-            responsesFromReceiver.RemoveAll(response => response.SequenceNumber < startOfWindow);
+            else
+            {
+                responsesFromReceiver.RemoveAll(response => response.SequenceNumber < startOfWindow);
+            }
+            Console.WriteLine("Sliding window");
+            Console.WriteLine("New start of window: " + startOfWindow);
+            Console.WriteLine("New end of window: " + endOfWindow);
         }
     }
     private static ushort GetHighestSequenceNumberRespondedFromReceiver()
