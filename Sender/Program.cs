@@ -20,7 +20,9 @@ internal class Program
     private static ushort dataSize = 0;
     private static ushort maxNumberOfBytesPerPackage = 2;
     private static ushort startOfWindow;
-    private static ushort endOfWindow { get 
+    private static Task listeningThread;
+    private static ushort endOfWindow {
+        get
         {
             if (startOfWindow < ushort.MaxValue - ConnectionManager.WindowSize)
             {
@@ -51,8 +53,12 @@ internal class Program
         if (hanshakeSuccessfull)
         {
             isSending = true;
-            //ReadReceiverResponsesThread();
-            _ = Task.Run(ReadReceiverResponsesThread);
+            listeningThread = Task.Run(ReadReceiverResponsesThread);
+        }
+        else
+        {
+            Console.WriteLine("Handshake failed, closing program");
+            return;
         }
         CreatePacketsOfXBytes(maxNumberOfBytesPerPackage);
         await SendAllPackets();
@@ -158,33 +164,7 @@ internal class Program
         await udpClient.SendAsync(finBytes, finBytes.Length, receiverEndpoint);
         senderSequenceNumber++;
         Console.WriteLine("Sent FIN packet to receiver. Waiting for FIN-ACK.");
-        // Wait for FIN-ACK
-        var receiveTask = udpClient.ReceiveAsync();
-        if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
-        {
-            var result = receiveTask.Result;
-            var finAckPacket = Packet.Deserialize(result.Buffer);
-            if (finAckPacket.FIN && finAckPacket.ACK)
-            {
-                Console.WriteLine("Received FIN-ACK. Sending final ACK.");
-                // Send final ACK to complete termination
-                var finalAckPacket = new Packet
-                {
-                    ACK = true,
-                    SequenceNumber = (ushort)(senderSequenceNumber + 2),
-                    TotalDataSize = 0,
-                    Data = new byte[0]
-                };
-                var finalAckBytes = finalAckPacket.Serialize();
-                await udpClient.SendAsync(finalAckBytes, finalAckBytes.Length, receiverEndpoint);
-                isSending = false;
-                Console.WriteLine("Connection terminated gracefully.");
-            }
-        }
-        else
-        {
-            Console.WriteLine("Did not receive FIN-ACK. Connection termination failed.");
-        }
+        listeningThread.Wait();
     }
 
     /// <summary>
@@ -196,12 +176,30 @@ internal class Program
     {
         while (isSending)
         {
+            Console.WriteLine("Waiting for receiver response...");
             var receiveTask = udpClient.ReceiveAsync();
             if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
             {
                 var result = receiveTask.Result;
                 var packet = Packet.Deserialize(result.Buffer);
-                if (packet.ACK)
+                if (packet.ACK && packet.FIN)
+                {
+                    Console.WriteLine("Received FIN-ACK. Sending final ACK.");
+                    // Send final ACK to complete termination
+                    var finalAckPacket = new Packet
+                    {
+                        ACK = true,
+                        SequenceNumber = (ushort)(senderSequenceNumber + 2),
+                        TotalDataSize = 0,
+                        Data = new byte[0]
+                    };
+                    var finalAckBytes = finalAckPacket.Serialize();
+                    await udpClient.SendAsync(finalAckBytes, finalAckBytes.Length, receiverEndpoint);
+                    isSending = false;
+                    Console.WriteLine("Connection terminated gracefully.");
+                    return;
+                }
+                else if (packet.ACK)
                 {
                     if (!IsADuplicatedResponse(packet))
                     {

@@ -32,13 +32,13 @@ internal class Program
         while (true)
         {
             await ReceivePacket();
-            await RespondToSender();
             if (receivedPacket.FIN)
             {
-                await HandleFinPacketReceived();
                 break;
             }
+            await RespondToSender();
         }
+        await HandleFinPacketReceived();
     }
 
     private static void InitConnectionParameters()
@@ -122,11 +122,8 @@ internal class Program
             SequenceNumber = receiverSequenceNumber
         }; 
         var responseBytes = responsePacket.Serialize();
-        //await udpClient.SendAsync(responseBytes, responseBytes.Length, senderEndpoint);
-        //await udpClient.SendAsync(responsePacket.Data, responsePacket.TotalDataSize, udpReceivedResult.RemoteEndPoint);
+        Console.WriteLine($"Sending ACK for sequence number {receivedPacket.SequenceNumber}");
         await udpClient.SendAsync(responseBytes, responseBytes.Length, udpReceivedResult.RemoteEndPoint);
-        //await udpClient.SendAsync(responsePacket.Data, responsePacket.TotalDataSize, senderEndpoint);
-        Console.WriteLine($"Sent ACK for sequence number {receivedPacket.SequenceNumber}");
         receiverSequenceNumber++;
     }
     public static void SetHighestCorrectSequenceNumber()
