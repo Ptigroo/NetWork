@@ -70,7 +70,7 @@ internal class Program
         var receiveTask = udpClient.ReceiveAsync();
         if (await Task.WhenAny(receiveTask, Task.Delay(3000)) == receiveTask)
         {
-            var udpReceivedResult = receiveTask.Result;
+            udpReceivedResult = receiveTask.Result;
             Console.WriteLine("Packet received...");
             receivedPacket = Packet.Deserialize(udpReceivedResult.Buffer);
             if (highestCorrectSequenceNumbersReceived == 0)
@@ -122,7 +122,9 @@ internal class Program
             SequenceNumber = receiverSequenceNumber
         }; 
         var responseBytes = responsePacket.Serialize();
-        await udpClient.SendAsync(responseBytes, responseBytes.Length, senderEndpoint);
+        //await udpClient.SendAsync(responseBytes, responseBytes.Length, senderEndpoint);
+        //await udpClient.SendAsync(responsePacket.Data, responsePacket.TotalDataSize, udpReceivedResult.RemoteEndPoint);
+        await udpClient.SendAsync(responseBytes, responseBytes.Length, udpReceivedResult.RemoteEndPoint);
         //await udpClient.SendAsync(responsePacket.Data, responsePacket.TotalDataSize, senderEndpoint);
         Console.WriteLine($"Sent ACK for sequence number {receivedPacket.SequenceNumber}");
         receiverSequenceNumber++;
